@@ -89,10 +89,8 @@ func (a *arbitrumEstimator) Close() error {
 	})
 }
 
-func (a *arbitrumEstimator) Ready() error { return a.StartStopOnce.Ready() }
-
 func (a *arbitrumEstimator) HealthReport() map[string]error {
-	return map[string]error{a.Name(): a.StartStopOnce.Healthy()}
+	return map[string]error{a.Name(): a.Healthy()}
 }
 
 // GetLegacyGas estimates both the gas price and the gas limit.

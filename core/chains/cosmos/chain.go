@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"maps"
 	"math/big"
 	"time"
 
@@ -204,11 +205,9 @@ func (c *chain) Ready() error {
 }
 
 func (c *chain) HealthReport() map[string]error {
-	return map[string]error{
-		c.Name(): multierr.Combine(
-			c.StartStopOnce.Healthy(),
-			c.txm.Healthy()),
-	}
+	m := map[string]error{c.Name(): c.Healthy()}
+	maps.Copy(m, c.txm.HealthReport())
+	return m
 }
 
 // ChainService interface

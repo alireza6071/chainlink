@@ -182,12 +182,12 @@ func (mt *mercuryTransmitter) Close() error {
 	})
 }
 
-func (mt *mercuryTransmitter) Ready() error { return mt.StartStopOnce.Ready() }
+func (mt *mercuryTransmitter) Ready() error { return mt.Ready() }
 
 func (mt *mercuryTransmitter) Name() string { return mt.lggr.Name() }
 
 func (mt *mercuryTransmitter) HealthReport() map[string]error {
-	report := map[string]error{mt.Name(): mt.StartStopOnce.Healthy()}
+	report := map[string]error{mt.Name(): mt.Healthy()}
 	maps.Copy(report, mt.rpcClient.HealthReport())
 	maps.Copy(report, mt.queue.HealthReport())
 	return report

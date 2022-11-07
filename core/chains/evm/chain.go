@@ -377,9 +377,7 @@ func (c *chain) Name() string {
 }
 
 func (c *chain) HealthReport() map[string]error {
-	report := map[string]error{
-		c.Name(): c.StartStopOnce.Healthy(),
-	}
+	report := map[string]error{c.Name(): c.Healthy()}
 	maps.Copy(report, c.txm.HealthReport())
 	maps.Copy(report, c.headBroadcaster.HealthReport())
 	maps.Copy(report, c.headTracker.HealthReport())
