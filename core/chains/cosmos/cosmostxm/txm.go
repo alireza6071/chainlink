@@ -176,12 +176,13 @@ func (e *msgValidator) add(msg adapters.Msg) {
 }
 
 func (e *msgValidator) sortValid() {
-	slices.SortFunc(e.valid, func(a, b adapters.Msg) bool {
+	slices.SortFunc(e.valid, func(a, b adapters.Msg) int {
 		ac, bc := a.CreatedAt, b.CreatedAt
-		if ac.Equal(bc) {
-			return a.ID < b.ID
+		if c := ac.Compare(bc); c != 0 {
+			return c
 		}
-		return ac.Before(bc)
+		// Equal
+		return int(a.ID - b.ID)
 	})
 }
 

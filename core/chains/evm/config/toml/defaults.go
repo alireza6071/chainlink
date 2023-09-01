@@ -62,9 +62,7 @@ func init() {
 		defaults[id] = config.Chain
 		defaultNames[id] = strings.ReplaceAll(strings.TrimSuffix(fe.Name(), ".toml"), "_", " ")
 	}
-	slices.SortFunc(DefaultIDs, func(a, b *utils.Big) bool {
-		return a.Cmp(b) < 0
-	})
+	slices.SortFunc(DefaultIDs, func(a, b *utils.Big) int { return a.Cmp(b) })
 }
 
 // DefaultsNamed returns the default Chain values, optionally for the given chainID, as well as a name if the chainID is known.
