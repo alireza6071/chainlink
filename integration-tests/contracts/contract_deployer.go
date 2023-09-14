@@ -154,6 +154,8 @@ func NewContractDeployer(bcClient blockchain.EVMClient, logger zerolog.Logger) (
 		return &BSCContractDeployer{NewEthereumContractDeployer(clientImpl, logger)}, nil
 	case *blockchain.ScrollClient:
 		return &ScrollContractDeployer{NewEthereumContractDeployer(clientImpl, logger)}, nil
+	case *blockchain.LineaClient:
+		return &LineaContractDeployer{NewEthereumContractDeployer(clientImpl, logger)}, nil
 	}
 	return nil, errors.New("unknown blockchain client implementation for contract deployer, register blockchain client in NewContractDeployer")
 }
@@ -206,6 +208,10 @@ type BSCContractDeployer struct {
 }
 
 type ScrollContractDeployer struct {
+	*EthereumContractDeployer
+}
+
+type LineaContractDeployer struct {
 	*EthereumContractDeployer
 }
 
