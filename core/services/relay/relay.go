@@ -106,6 +106,10 @@ func (r *relayerAdapter) NewMercuryProvider(ctx context.Context, rargs types.Rel
 	return r.Relayer.NewMercuryProvider(rargs, pargs)
 }
 
+func (r *relayerAdapter) NewLLOProvider(rargs types.RelayArgs, pargs types.PluginArgs) (types.LLOProvider, error) {
+	return r.Relayer.NewLLOProvicer(rargs, pargs)
+}
+
 func (r *relayerAdapter) NewFunctionsProvider(ctx context.Context, rargs types.RelayArgs, pargs types.PluginArgs) (types.FunctionsProvider, error) {
 	return r.Relayer.NewFunctionsProvider(rargs, pargs)
 }
