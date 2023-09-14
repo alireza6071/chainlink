@@ -107,7 +107,7 @@ func (r *relayerAdapter) NewMercuryProvider(ctx context.Context, rargs types.Rel
 }
 
 func (r *relayerAdapter) NewLLOProvider(rargs types.RelayArgs, pargs types.PluginArgs) (types.LLOProvider, error) {
-	return r.Relayer.NewLLOProvicer(rargs, pargs)
+	return r.Relayer.NewLLOProvider(rargs, pargs)
 }
 
 func (r *relayerAdapter) NewFunctionsProvider(ctx context.Context, rargs types.RelayArgs, pargs types.PluginArgs) (types.FunctionsProvider, error) {
