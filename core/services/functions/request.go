@@ -18,6 +18,13 @@ const (
 
 type RequestFlags [32]byte
 
+type OffchainRequest struct {
+	RequestID         [32]byte
+	SubscriptionId    uint64
+	SubscriptionOwner common.Address
+	Data              RequestData
+}
+
 type RequestData struct {
 	Source           string   `json:"source" cbor:"source"`
 	Language         int      `json:"language" cbor:"language"`

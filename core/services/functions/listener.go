@@ -481,6 +481,10 @@ func (l *FunctionsListener) parseCBOR(requestId RequestID, cborData []byte, maxS
 	return &requestData, nil
 }
 
+func (l *FunctionsListener) HandleOffchainRequest(ctx context.Context, request *OffchainRequest) {
+	l.handleRequest(ctx, request.RequestID, request.SubscriptionId, request.SubscriptionOwner, RequestFlags{}, &request.Data)
+}
+
 func (l *FunctionsListener) handleRequest(ctx context.Context, requestID RequestID, subscriptionId uint64, subscriptionOwner common.Address, flags RequestFlags, requestData *RequestData) {
 	startTime := time.Now()
 	defer func() {
