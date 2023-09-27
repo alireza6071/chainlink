@@ -1016,26 +1016,33 @@ func setupAutomationTestDocker(
 	clNodeConfig.P2P.V2.AnnounceAddresses = &[]string{"0.0.0.0:6690"}
 	clNodeConfig.P2P.V2.ListenAddresses = &[]string{"0.0.0.0:6690"}
 
-	secretsConfig := `
-	[Mercury.Credentials.cred1]
-	LegacyURL = 'http://localhost:53299'
-	URL = 'http://localhost:53299'
-	Username = 'node'
-	Password = 'nodepass'
-	`
-
 	//launch the environment
 	env, err := test_env.NewCLTestEnvBuilder().
 		WithTestLogger(t).
 		WithGeth().
 		WithMockServer(1).
-		WithCLNodes(5).
-		WithCLNodeConfig(clNodeConfig).
-		WithSecretsConfig(secretsConfig).
+		//WithCLNodes(5).
+		//WithCLNodeConfig(clNodeConfig).
+		//WithSecretsConfig(secretsConfig).
 		WithFunding(big.NewFloat(.5)).
 		Build()
 	require.NoError(t, err, "Error deploying test environment")
+
+	secretsConfig := `
+	[Mercury.Credentials.cred1]
+	LegacyURL = '%s'
+	URL = '%s'
+	Username = 'node'
+	Password = 'nodepass'
+	`
+	secretsConfig = fmt.Sprintf(secretsConfig, env.MockServer.InternalEndpoint, env.MockServer.InternalEndpoint)
+
+	err = env.StartClNodes(clNodeConfig, 5, secretsConfig)
+	require.NoError(t, err, "Error deploying test environment")
+
 	env.ParallelTransactions(true)
+
+	env.MockServer.Client.SetAnyValuePath("/client", `{"message": "Hello World!"}`)
 
 	txCost, err := env.EVMClient.EstimateCostForChainlinkOperations(1000)
 	require.NoError(t, err, "Error estimating cost for Chainlink Operations")
