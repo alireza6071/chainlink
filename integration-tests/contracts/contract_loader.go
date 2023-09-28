@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"errors"
+	"github.com/smartcontractkit/libocr/gethwrappers/offchainaggregator"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -32,6 +33,9 @@ type ContractLoader interface {
 	// Mercury
 	LoadMercuryVerifier(addr string) (MercuryVerifier, error)
 	LoadMercuryVerifierProxy(addr string) (MercuryVerifierProxy, error)
+
+	// OCR
+	LoadOcrContract(address common.Address) (OffchainAggregator, error)
 }
 
 // NewContractLoader returns an instance of a contract Loader based on the client type
@@ -49,6 +53,8 @@ func NewContractLoader(bcClient blockchain.EVMClient, logger zerolog.Logger) (Co
 		return &PolygonContractLoader{NewEthereumContractLoader(clientImpl, logger)}, nil
 	case *blockchain.OptimismClient:
 		return &OptimismContractLoader{NewEthereumContractLoader(clientImpl, logger)}, nil
+	case *blockchain.ZKSyncClient:
+		return &ZKSyncContractLoader{NewEthereumContractLoader(clientImpl, logger)}, nil
 	}
 	return nil, errors.New("unknown blockchain client implementation for contract Loader, register blockchain client in NewContractLoader")
 }
@@ -81,6 +87,11 @@ type PolygonContractLoader struct {
 
 // OptimismContractLoader wraps for Optimism
 type OptimismContractLoader struct {
+	*EthereumContractLoader
+}
+
+// ZKSyncContractLoader wraps for ZKSync
+type ZKSyncContractLoader struct {
 	*EthereumContractLoader
 }
 
@@ -236,5 +247,23 @@ func (e *EthereumContractLoader) LoadMercuryVerifierProxy(addr string) (MercuryV
 		client:   e.client,
 		instance: instance.(*verifier_proxy.VerifierProxy),
 		address:  common.HexToAddress(addr),
+	}, err
+}
+
+// LoadOcrContract returns deployed on given address OCR contract
+func (e *EthereumContractLoader) LoadOcrContract(address common.Address) (OffchainAggregator, error) {
+	instance, err := e.client.LoadContract("OffChain Aggregator", address, func(
+		address common.Address,
+		backend bind.ContractBackend,
+	) (interface{}, error) {
+		return offchainaggregator.NewOffchainAggregator(address, backend)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &EthereumOffchainAggregator{
+		client:  e.client,
+		ocr:     instance.(*offchainaggregator.OffchainAggregator),
+		address: &address,
 	}, err
 }

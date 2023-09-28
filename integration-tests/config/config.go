@@ -9,7 +9,6 @@ Enabled = true
 Enabled = true
 ListenIP = '0.0.0.0'
 ListenPort = 6690`
-
 	BaseOCR2Config = `[Feature]
 LogPoller = true
 
@@ -76,4 +75,10 @@ Logging = true
 ServerPubKey = '8fa807463ad73f9ee855cfd60ba406dcf98a2855b3dd8af613107b0f6890a707'
 URL = 'oti:1337' 
 `
+	DefaultOCRNetworkDetailTomlConfig = `FinalityDepth = 5
+[EVM.GasEstimator]
+LimitDefault = 3_500_000
+PriceMax = 100000000000
+PriceMin = 0
+FeeCapDefault = 100000000000`
 )
