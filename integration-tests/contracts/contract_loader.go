@@ -41,7 +41,7 @@ type ContractLoader interface {
 	LoadWERC20Mock(addr common.Address) (WERC20Mock, error)
 }
 
-// NewContractLoader returns an instance of a contract Loader based on the client type
+// NewContractLoader returnsa an instance of a contract Loader based on the client type
 func NewContractLoader(bcClient blockchain.EVMClient, logger zerolog.Logger) (ContractLoader, error) {
 	switch clientImpl := bcClient.Get().(type) {
 	case *blockchain.EthereumClient:
@@ -56,6 +56,8 @@ func NewContractLoader(bcClient blockchain.EVMClient, logger zerolog.Logger) (Co
 		return &PolygonContractLoader{NewEthereumContractLoader(clientImpl, logger)}, nil
 	case *blockchain.OptimismClient:
 		return &OptimismContractLoader{NewEthereumContractLoader(clientImpl, logger)}, nil
+	case *blockchain.PolygonZkEvmClient:
+		return &PolygonZkEVMContractLoader{NewEthereumContractLoader(clientImpl, logger)}, nil
 	}
 	return nil, errors.New("unknown blockchain client implementation for contract Loader, register blockchain client in NewContractLoader")
 }
@@ -83,6 +85,11 @@ type ArbitrumContractLoader struct {
 
 // PolygonContractLoader wraps for Polygon
 type PolygonContractLoader struct {
+	*EthereumContractLoader
+}
+
+// PolygonZkEVMContractLoader wraps for Polygon
+type PolygonZkEVMContractLoader struct {
 	*EthereumContractLoader
 }
 
