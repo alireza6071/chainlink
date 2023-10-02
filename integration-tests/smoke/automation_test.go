@@ -138,18 +138,18 @@ func SetupAutomationBasic(t *testing.T, nodeUpgrade bool) {
 			)
 
 			for i := 0; i < len(upkeepIDs); i++ {
+				if err := consumers[i].Start(); err != nil {
+					return
+				}
+
 				if isMercury {
-					// Enable mercury
+					// Set privilege config to enable mercury
 					privilegeConfigBytes, _ := json.Marshal(evm21.UpkeepPrivilegeConfig{
 						MercuryEnabled: true,
 					})
 					if err := registry.SetUpkeepPrivilegeConfig(upkeepIDs[i], privilegeConfigBytes); err != nil {
 						return
 					}
-				}
-
-				if err := consumers[i].Start(); err != nil {
-					return
 				}
 			}
 
@@ -1025,6 +1025,7 @@ func setupAutomationTestDocker(
 	//launch the environment
 	var env *test_env.CLClusterTestEnv
 	var err error
+	clNodesCount := 5
 	if isMercury {
 		env, err = test_env.NewCLTestEnvBuilder().
 			WithTestLogger(t).
@@ -1032,7 +1033,7 @@ func setupAutomationTestDocker(
 			WithMockServer(1).
 			WithFunding(big.NewFloat(.5)).
 			Build()
-		require.NoError(t, err, "Error deploying test environment")
+		require.NoError(t, err, "Error deploying test environment for Mercury")
 
 		secretsConfig := `
 		[Mercury.Credentials.cred1]
@@ -1054,17 +1055,17 @@ func setupAutomationTestDocker(
 
 		node.SetChainConfig(clNodeConfig, wsUrls, httpUrls, network, false)
 
-		err = env.StartClNodes(clNodeConfig, 5, secretsConfig)
-		require.NoError(t, err, "Error deploying test environment")
+		err = env.StartClNodes(clNodeConfig, clNodesCount, secretsConfig)
+		require.NoError(t, err, "Error starting CL nodes test environment for Mercury")
 
 		output := `{"chainlinkBlob":"0x0001c38d71fed6c320b90e84b6f559459814d068e2a1700adc931ca9717d4fe70000000000000000000000000000000000000000000000000000000001a80b52b4bf1233f9cb71144a253a1791b202113c4ab4a92fa1b176d684b4959666ff8200000000000000000000000000000000000000000000000000000000000000e000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001004254432d5553442d415242495452554d2d544553544e4554000000000000000000000000000000000000000000000000000000000000000000000000645570be000000000000000000000000000000000000000000000000000002af2b818dc5000000000000000000000000000000000000000000000000000002af2426faf3000000000000000000000000000000000000000000000000000002af32dc209700000000000000000000000000000000000000000000000000000000012130f8df0a9745bb6ad5e2df605e158ba8ad8a33ef8a0acf9851f0f01668a3a3f2b68600000000000000000000000000000000000000000000000000000000012130f60000000000000000000000000000000000000000000000000000000000000002c4a7958dce105089cf5edb68dad7dcfe8618d7784eb397f97d5a5fade78c11a58275aebda478968e545f7e3657aba9dcbe8d44605e4c6fde3e24edd5e22c94270000000000000000000000000000000000000000000000000000000000000002459c12d33986018a8959566d145225f0c4a4e61a9a3f50361ccff397899314f0018162cf10cd89897635a0bb62a822355bd199d09f4abe76e4d05261bb44733d"}`
-		env.MockServer.Client.SetAnyValuePath("/client", []byte(output))
+		env.MockServer.Client.SetStringValuePath("/client", output)
 	} else {
 		env, err = test_env.NewCLTestEnvBuilder().
 			WithTestLogger(t).
 			WithGeth().
 			WithMockServer(1).
-			WithCLNodes(5).
+			WithCLNodes(clNodesCount).
 			WithCLNodeConfig(clNodeConfig).
 			WithFunding(big.NewFloat(.5)).
 			Build()
@@ -1072,11 +1073,9 @@ func setupAutomationTestDocker(
 	}
 
 	env.ParallelTransactions(true)
-	txCost, err := env.EVMClient.EstimateCostForChainlinkOperations(1000)
-	require.NoError(t, err, "Error estimating cost for Chainlink Operations")
 	nodeClients := env.GetAPIs()
 	workerNodes := nodeClients[1:]
-	err = actions.FundChainlinkNodesLocal(workerNodes, env.EVMClient, txCost)
+	err = actions.FundChainlinkNodesLocal(workerNodes, env.EVMClient, big.NewFloat(1.0))
 	require.NoError(t, err, "Error funding Chainlink nodes")
 
 	linkToken, err := env.ContractDeployer.DeployLinkTokenContract()
