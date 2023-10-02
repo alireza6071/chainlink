@@ -58,10 +58,11 @@ type LogPoller interface {
 	IndexedLogsWithSigsExcluding(address common.Address, eventSigA, eventSigB common.Hash, topicIndex int, fromBlock, toBlock int64, confs Confirmations, qopts ...pg.QOpt) ([]Log, error)
 	LogsDataWordRange(eventSig common.Hash, address common.Address, wordIndex int, wordValueMin, wordValueMax common.Hash, confs Confirmations, qopts ...pg.QOpt) ([]Log, error)
 	LogsDataWordGreaterThan(eventSig common.Hash, address common.Address, wordIndex int, wordValueMin common.Hash, confs Confirmations, qopts ...pg.QOpt) ([]Log, error)
-	LogsUntilBlockHashDataWordGreaterThan(eventSig common.Hash, address common.Address, wordIndex int, wordValueMin common.Hash, untilBlockHash common.Hash, qopts ...pg.QOpt) ([]Log, error)
 }
 
 type Confirmations int
+
+const Finalized = Confirmations(-1)
 
 type LogPollerTest interface {
 	LogPoller
@@ -92,7 +93,8 @@ type logPoller struct {
 	orm                   ORM
 	lggr                  logger.Logger
 	pollPeriod            time.Duration // poll period set by block production rate
-	finalityDepth         int64         // finality depth is taken to mean that block (head - finality) is finalized
+	useFinalityTag        bool          // indicates whether logPoller should use chain's finality or pick a fixed depth for finality
+	finalityDepth         int64         // finality depth is taken to mean that block (head - finality) is finalized. When finalityTag is used, this value keeps changing
 	keepBlocksDepth       int64         // the number of blocks behind the head for which we keep the blocks. Must be greater than finality depth + 1.
 	backfillBatchSize     int64         // batch size to use when backfilling finalized logs
 	rpcBatchSize          int64         // batch size to use for fallback RPC calls made in GetBlocks
@@ -122,7 +124,7 @@ type logPoller struct {
 // How fast that can be done depends largely on network speed and DB, but even for the fastest
 // support chain, polygon, which has 2s block times, we need RPCs roughly with <= 500ms latency
 func NewLogPoller(orm ORM, ec Client, lggr logger.Logger, pollPeriod time.Duration,
-	finalityDepth int64, backfillBatchSize int64, rpcBatchSize int64, keepBlocksDepth int64) *logPoller {
+	useFinalityTag bool, finalityDepth int64, backfillBatchSize int64, rpcBatchSize int64, keepBlocksDepth int64) *logPoller {
 
 	return &logPoller{
 		ec:                ec,
@@ -132,6 +134,7 @@ func NewLogPoller(orm ORM, ec Client, lggr logger.Logger, pollPeriod time.Durati
 		replayComplete:    make(chan error),
 		pollPeriod:        pollPeriod,
 		finalityDepth:     finalityDepth,
+		useFinalityTag:    useFinalityTag,
 		backfillBatchSize: backfillBatchSize,
 		rpcBatchSize:      rpcBatchSize,
 		keepBlocksDepth:   keepBlocksDepth,
@@ -371,7 +374,8 @@ func (lp *logPoller) ReplayAsync(fromBlock int64) {
 }
 
 func (lp *logPoller) Start(parentCtx context.Context) error {
-	if lp.keepBlocksDepth < (lp.finalityDepth + 1) {
+	// Don't verify when using finality tag, since we don't know the finality depth yet.
+	if !lp.useFinalityTag && lp.keepBlocksDepth < (lp.finalityDepth+1) {
 		// We add 1 since for reorg detection on the first unfinalized block
 		// we need to keep 1 finalized block.
 		return errors.Errorf("keepBlocksDepth %d must be greater than finality %d + 1", lp.keepBlocksDepth, lp.finalityDepth)
@@ -497,21 +501,21 @@ func (lp *logPoller) run() {
 				}
 				// Otherwise this is the first poll _ever_ on a new chain.
 				// Only safe thing to do is to start at the first finalized block.
-				latest, err := lp.ec.HeadByNumber(lp.ctx, nil)
+				latestBlock, _, finalityDepth, err := lp.latestBlocks(lp.ctx)
 				if err != nil {
 					lp.lggr.Warnw("Unable to get latest for first poll", "err", err)
 					continue
 				}
-				latestNum := latest.Number
+				latestNum := latestBlock.Number
 				// Do not support polling chains which don't even have finality depth worth of blocks.
 				// Could conceivably support this but not worth the effort.
 				// Need finality depth + 1, no block 0.
-				if latestNum <= lp.finalityDepth {
-					lp.lggr.Warnw("Insufficient number of blocks on chain, waiting for finality depth", "err", err, "latest", latestNum, "finality", lp.finalityDepth)
+				if latestNum <= finalityDepth {
+					lp.lggr.Warnw("Insufficient number of blocks on chain, waiting for finality depth", "err", err, "latest", latestNum, "finality", finalityDepth)
 					continue
 				}
 				// Starting at the first finalized block. We do not backfill the first finalized block.
-				start = latestNum - lp.finalityDepth
+				start = latestNum - finalityDepth
 			} else {
 				start = lastProcessed.BlockNumber + 1
 			}
@@ -548,6 +552,12 @@ func (lp *logPoller) run() {
 }
 
 func (lp *logPoller) BackupPollAndSaveLogs(ctx context.Context, backupPollerBlockDelay int64) {
+	latestBlock, _, finalityDepth, err := lp.latestBlocks(lp.ctx)
+	if err != nil {
+		lp.lggr.Warnw("Backup logpoller failed to get latest block", "err", err)
+		return
+	}
+
 	if lp.backupPollerNextBlock == 0 {
 		lastProcessed, err := lp.orm.SelectLatestBlock(pg.WithParentCtx(ctx))
 		if err != nil {
@@ -559,21 +569,20 @@ func (lp *logPoller) BackupPollAndSaveLogs(ctx context.Context, backupPollerBloc
 			return
 		}
 
+		if err != nil {
+			lp.lggr.Warnw("Backup logpoller failed to fetch finality", "err", err)
+			return
+		}
+
 		// If this is our first run, start max(finalityDepth+1, backupPollerBlockDelay) blocks behind the last processed
 		// (or at block 0 if whole blockchain is too short)
-		lp.backupPollerNextBlock = lastProcessed.BlockNumber - mathutil.Max(lp.finalityDepth+1, backupPollerBlockDelay)
+		lp.backupPollerNextBlock = lastProcessed.BlockNumber - mathutil.Max(finalityDepth+1, backupPollerBlockDelay)
 		if lp.backupPollerNextBlock < 0 {
 			lp.backupPollerNextBlock = 0
 		}
 	}
 
-	latestBlock, err := lp.ec.HeadByNumber(ctx, nil)
-	if err != nil {
-		lp.lggr.Warnw("Backup logpoller failed to get latest block", "err", err)
-		return
-	}
-
-	lastSafeBackfillBlock := latestBlock.Number - lp.finalityDepth - 1
+	lastSafeBackfillBlock := latestBlock.Number - finalityDepth - 1
 	if lastSafeBackfillBlock >= lp.backupPollerNextBlock {
 		lp.lggr.Infow("Backup poller backfilling logs", "start", lp.backupPollerNextBlock, "end", lastSafeBackfillBlock)
 		if err = lp.backfill(ctx, lp.backupPollerNextBlock, lastSafeBackfillBlock); err != nil {
@@ -697,7 +706,7 @@ func (lp *logPoller) backfill(ctx context.Context, start, end int64) error {
 // 1. Find the LCA by following parent hashes.
 // 2. Delete all logs and blocks after the LCA
 // 3. Return the LCA+1, i.e. our new current (unprocessed) block.
-func (lp *logPoller) getCurrentBlockMaybeHandleReorg(ctx context.Context, currentBlockNumber int64, currentBlock *evmtypes.Head) (*evmtypes.Head, error) {
+func (lp *logPoller) getCurrentBlockMaybeHandleReorg(ctx context.Context, currentBlockNumber int64, currentBlock *evmtypes.Head, finalityDepth int64) (*evmtypes.Head, error) {
 	var err1 error
 	if currentBlock == nil {
 		// If we don't have the current block already, lets get it.
@@ -735,7 +744,7 @@ func (lp *logPoller) getCurrentBlockMaybeHandleReorg(ctx context.Context, curren
 		// There can be another reorg while we're finding the LCA.
 		// That is ok, since we'll detect it on the next iteration.
 		// Since we go currentBlock by currentBlock for unfinalized logs, the mismatch starts at currentBlockNumber - 1.
-		blockAfterLCA, err2 := lp.findBlockAfterLCA(ctx, currentBlock)
+		blockAfterLCA, err2 := lp.findBlockAfterLCA(ctx, currentBlock, finalityDepth)
 		if err2 != nil {
 			lp.lggr.Warnw("Unable to find LCA after reorg, retrying", "err", err2)
 			return nil, errors.New("Unable to find LCA after reorg, retrying")
@@ -780,7 +789,10 @@ func (lp *logPoller) getCurrentBlockMaybeHandleReorg(ctx context.Context, curren
 // conditions this would be equal to lastProcessed.BlockNumber + 1.
 func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int64) {
 	lp.lggr.Debugw("Polling for logs", "currentBlockNumber", currentBlockNumber)
-	latestBlock, err := lp.ec.HeadByNumber(ctx, nil)
+	// Intentionally not using logPoller.finalityDepth directly but the one returned from the function.
+	// latestBlocks function knows how to pick a proper finalityDepth based on the logPoller's configuration
+	latestBlock, latestFinalizedBlock, finalityDepth, err := lp.latestBlocks(ctx)
+
 	if err != nil {
 		lp.lggr.Warnw("Unable to get latestBlockNumber block", "err", err, "currentBlockNumber", currentBlockNumber)
 		return
@@ -799,7 +811,7 @@ func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int
 	}
 	// Possibly handle a reorg. For example if we crash, we'll be in the middle of processing unfinalized blocks.
 	// Returns (currentBlock || LCA+1 if reorg detected, error)
-	currentBlock, err = lp.getCurrentBlockMaybeHandleReorg(ctx, currentBlockNumber, currentBlock)
+	currentBlock, err = lp.getCurrentBlockMaybeHandleReorg(ctx, currentBlockNumber, currentBlock, finalityDepth)
 	if err != nil {
 		// If there's an error handling the reorg, we can't be sure what state the db was left in.
 		// Resume from the latest block saved and retry.
@@ -813,7 +825,7 @@ func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int
 	// E.g. 1<-2<-3(currentBlockNumber)<-4<-5<-6<-7(latestBlockNumber), finality is 2. So 3,4 can be batched.
 	// Although 5 is finalized, we still need to save it to the db for reorg detection if 6 is a reorg.
 	// start = currentBlockNumber = 3, end = latestBlockNumber - finality - 1 = 7-2-1 = 4 (inclusive range).
-	lastSafeBackfillBlock := latestBlockNumber - lp.finalityDepth - 1
+	lastSafeBackfillBlock := latestBlockNumber - finalityDepth - 1
 	if lastSafeBackfillBlock >= currentBlockNumber {
 		lp.lggr.Infow("Backfilling logs", "start", currentBlockNumber, "end", lastSafeBackfillBlock)
 		if err = lp.backfill(ctx, currentBlockNumber, lastSafeBackfillBlock); err != nil {
@@ -828,7 +840,7 @@ func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int
 	if currentBlockNumber > currentBlock.Number {
 		// If we successfully backfilled we have logs up to and including lastSafeBackfillBlock,
 		// now load the first unfinalized block.
-		currentBlock, err = lp.getCurrentBlockMaybeHandleReorg(ctx, currentBlockNumber, nil)
+		currentBlock, err = lp.getCurrentBlockMaybeHandleReorg(ctx, currentBlockNumber, nil, finalityDepth)
 		if err != nil {
 			// If there's an error handling the reorg, we can't be sure what state the db was left in.
 			// Resume from the latest block saved.
@@ -847,7 +859,8 @@ func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int
 		}
 		lp.lggr.Debugw("Unfinalized log query", "logs", len(logs), "currentBlockNumber", currentBlockNumber, "blockHash", currentBlock.Hash, "timestamp", currentBlock.Timestamp.Unix())
 		err = lp.orm.Q().WithOpts(pg.WithParentCtx(ctx)).Transaction(func(tx pg.Queryer) error {
-			if err2 := lp.orm.InsertBlock(h, currentBlockNumber, currentBlock.Timestamp, pg.WithQueryer(tx)); err2 != nil {
+			finalizedBlockNumber := getLatestFinalizedBlockNumber(latestBlock, latestFinalizedBlock, finalityDepth)
+			if err2 := lp.orm.InsertBlock(h, currentBlockNumber, currentBlock.Timestamp, finalizedBlockNumber, pg.WithQueryer(tx)); err2 != nil {
 				return err2
 			}
 			if len(logs) == 0 {
@@ -870,7 +883,7 @@ func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int
 		if currentBlockNumber > latestBlockNumber {
 			break
 		}
-		currentBlock, err = lp.getCurrentBlockMaybeHandleReorg(ctx, currentBlockNumber, nil)
+		currentBlock, err = lp.getCurrentBlockMaybeHandleReorg(ctx, currentBlockNumber, nil, finalityDepth)
 		if err != nil {
 			// If there's an error handling the reorg, we can't be sure what state the db was left in.
 			// Resume from the latest block saved.
@@ -881,9 +894,35 @@ func (lp *logPoller) PollAndSaveLogs(ctx context.Context, currentBlockNumber int
 	}
 }
 
+// Returns information about latestBlock, latestFinalizedBlock and finalityDepth
+// If finality tag is not enabled, latestFinalizedBlock will be empty and finalityDepth will be fetched from config.
+// Otherwise, latestFinalizedBlock will be fetched from RPC and finalityDepth will be calculated as latestBlockNumber - latestFinalizedBlockNumber
+func (lp *logPoller) latestBlocks(ctx context.Context) (*evmtypes.Head, *evmtypes.Head, int64, error) {
+	// If finality is not enabled, we can only fetch the latest block
+	if !lp.useFinalityTag {
+		latestBlock, err := lp.ec.HeadByNumber(ctx, nil)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		// Make it explicit that we don't have a finalized block and return nil.
+		// Returning an empty block in this case might lead to accidentally using it by the client and for instance
+		// trying to use empty hash or empty block timestamp.
+		return latestBlock, nil, lp.finalityDepth, nil
+	}
+
+	// If finality is enabled, we need to get the latest and finalized blocks.
+	blocks, err := lp.batchFetchBlocks(ctx, []string{rpc.LatestBlockNumber.String(), rpc.FinalizedBlockNumber.String()}, 2)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	latest := blocks[0]
+	finalized := blocks[1]
+	return latest, finalized, latest.Number - finalized.Number, nil
+}
+
 // Find the first place where our chain and their chain have the same block,
 // that block number is the LCA. Return the block after that, where we want to resume polling.
-func (lp *logPoller) findBlockAfterLCA(ctx context.Context, current *evmtypes.Head) (*evmtypes.Head, error) {
+func (lp *logPoller) findBlockAfterLCA(ctx context.Context, current *evmtypes.Head, finalityDepth int64) (*evmtypes.Head, error) {
 	// Current is where the mismatch starts.
 	// Check its parent to see if its the same as ours saved.
 	parent, err := lp.ec.HeadByHash(ctx, current.ParentHash)
@@ -896,7 +935,7 @@ func (lp *logPoller) findBlockAfterLCA(ctx context.Context, current *evmtypes.He
 	// since the block at (current - finalityDepth) is finalized.
 	// We loop via parent instead of current so current always holds the LCA+1.
 	// If the parent block number becomes < the first finalized block our reorg is too deep.
-	for parent.Number >= (reorgStart - lp.finalityDepth) {
+	for parent.Number >= (reorgStart - finalityDepth) {
 		ourParentBlockHash, err := lp.orm.SelectBlockByNumber(parent.Number, pg.WithParentCtx(ctx))
 		if err != nil {
 			return nil, err
@@ -912,7 +951,7 @@ func (lp *logPoller) findBlockAfterLCA(ctx context.Context, current *evmtypes.He
 			return nil, err
 		}
 	}
-	lp.lggr.Criticalw("Reorg greater than finality depth detected", "max reorg depth", lp.finalityDepth-1)
+	lp.lggr.Criticalw("Reorg greater than finality depth detected", "max reorg depth", finalityDepth-1)
 	rerr := errors.New("Reorg greater than finality depth")
 	lp.SvcErrBuffer.Append(rerr)
 	return nil, rerr
@@ -984,12 +1023,6 @@ func (lp *logPoller) IndexedLogsTopicGreaterThan(eventSig common.Hash, address c
 	return lp.orm.SelectIndexedLogsTopicGreaterThan(address, eventSig, topicIndex, topicValueMin, confs, qopts...)
 }
 
-// LogsUntilBlockHashDataWordGreaterThan note index is 0 based.
-// If the blockhash is not found (i.e. a stale fork) it will error.
-func (lp *logPoller) LogsUntilBlockHashDataWordGreaterThan(eventSig common.Hash, address common.Address, wordIndex int, wordValueMin common.Hash, untilBlockHash common.Hash, qopts ...pg.QOpt) ([]Log, error) {
-	return lp.orm.SelectLogsUntilBlockHashDataWordGreaterThan(address, eventSig, wordIndex, wordValueMin, untilBlockHash, qopts...)
-}
-
 func (lp *logPoller) IndexedLogsTopicRange(eventSig common.Hash, address common.Address, topicIndex int, topicValueMin common.Hash, topicValueMax common.Hash, confs Confirmations, qopts ...pg.QOpt) ([]Log, error) {
 	return lp.orm.SelectIndexedLogsTopicRange(address, eventSig, topicIndex, topicValueMin, topicValueMax, confs, qopts...)
 }
@@ -1043,7 +1076,7 @@ func (lp *logPoller) GetBlocksRange(ctx context.Context, numbers []uint64, qopts
 	qopts = append(qopts, pg.WithParentCtx(ctx))
 	minRequestedBlock := int64(mathutil.Min(numbers[0], numbers[1:]...))
 	maxRequestedBlock := int64(mathutil.Max(numbers[0], numbers[1:]...))
-	lpBlocks, err := lp.orm.GetBlocksRange(minRequestedBlock, maxRequestedBlock, qopts...)
+	lpBlocks, err := lp.orm.GetBlocksRange(int64(minRequestedBlock), int64(maxRequestedBlock), qopts...)
 	if err != nil {
 		lp.lggr.Warnw("Error while retrieving blocks from log pollers blocks table. Falling back to RPC...", "requestedBlocks", numbers, "err", err)
 	} else {
@@ -1086,17 +1119,10 @@ func (lp *logPoller) fillRemainingBlocksFromRPC(
 	blocksRequested map[uint64]struct{},
 	blocksFound map[uint64]LogPollerBlock,
 ) (map[uint64]LogPollerBlock, error) {
-	var reqs []rpc.BatchElem
-	var remainingBlocks []uint64
+	var remainingBlocks []string
 	for num := range blocksRequested {
 		if _, ok := blocksFound[num]; !ok {
-			req := rpc.BatchElem{
-				Method: "eth_getBlockByNumber",
-				Args:   []interface{}{hexutil.EncodeBig(big.NewInt(0).SetUint64(num)), false},
-				Result: &evmtypes.Head{},
-			}
-			reqs = append(reqs, req)
-			remainingBlocks = append(remainingBlocks, num)
+			remainingBlocks = append(remainingBlocks, hexutil.EncodeBig(new(big.Int).SetUint64(num)))
 		}
 	}
 
@@ -1105,8 +1131,37 @@ func (lp *logPoller) fillRemainingBlocksFromRPC(
 			"remainingBlocks", remainingBlocks)
 	}
 
-	for i := 0; i < len(reqs); i += int(lp.rpcBatchSize) {
-		j := i + int(lp.rpcBatchSize)
+	evmBlocks, err := lp.batchFetchBlocks(ctx, remainingBlocks, lp.rpcBatchSize)
+	if err != nil {
+		return nil, err
+	}
+
+	logPollerBlocks := make(map[uint64]LogPollerBlock)
+	for _, head := range evmBlocks {
+		logPollerBlocks[uint64(head.Number)] = LogPollerBlock{
+			EvmChainId:     head.EVMChainID,
+			BlockHash:      head.Hash,
+			BlockNumber:    head.Number,
+			BlockTimestamp: head.Timestamp,
+			CreatedAt:      head.Timestamp,
+		}
+	}
+	return logPollerBlocks, nil
+}
+
+func (lp *logPoller) batchFetchBlocks(ctx context.Context, blocksRequested []string, batchSize int64) ([]*evmtypes.Head, error) {
+	reqs := make([]rpc.BatchElem, 0, len(blocksRequested))
+	for _, num := range blocksRequested {
+		req := rpc.BatchElem{
+			Method: "eth_getBlockByNumber",
+			Args:   []interface{}{num, false},
+			Result: &evmtypes.Head{},
+		}
+		reqs = append(reqs, req)
+	}
+
+	for i := 0; i < len(reqs); i += int(batchSize) {
+		j := i + int(batchSize)
 		if j > len(reqs) {
 			j = len(reqs)
 		}
@@ -1117,7 +1172,7 @@ func (lp *logPoller) fillRemainingBlocksFromRPC(
 		}
 	}
 
-	var blocksFoundFromRPC = make(map[uint64]LogPollerBlock)
+	var blocks = make([]*evmtypes.Head, 0, len(reqs))
 	for _, r := range reqs {
 		if r.Error != nil {
 			return nil, r.Error
@@ -1136,16 +1191,10 @@ func (lp *logPoller) fillRemainingBlocksFromRPC(
 		if block.Number < 0 {
 			return nil, errors.Errorf("expected block number to be >= to 0, got %d", block.Number)
 		}
-		blocksFoundFromRPC[uint64(block.Number)] = LogPollerBlock{
-			EvmChainId:     block.EVMChainID,
-			BlockHash:      block.Hash,
-			BlockNumber:    block.Number,
-			BlockTimestamp: block.Timestamp,
-			CreatedAt:      block.Timestamp,
-		}
+		blocks = append(blocks, block)
 	}
 
-	return blocksFoundFromRPC, nil
+	return blocks, nil
 }
 
 // IndexedLogsWithSigsExcluding returns the set difference(A-B) of logs with signature sigA and sigB, matching is done on the topics index
@@ -1160,4 +1209,17 @@ func EvmWord(i uint64) common.Hash {
 	var b = make([]byte, 8)
 	binary.BigEndian.PutUint64(b, i)
 	return common.BytesToHash(b)
+}
+
+func getLatestFinalizedBlockNumber(latestBlock *evmtypes.Head, latestFinalizedBlock *evmtypes.Head, finalityDepth int64) int64 {
+	// If finalizedBlock is present then just return its number
+	if latestFinalizedBlock != nil {
+		return latestFinalizedBlock.Number
+	}
+	// Scenario with brand-new chain that does not use finality tag and not enough blocks compared to finalityDepth.
+	// We want to prevent from persisting finalized block number lower than 0 which might be extremely misleading.
+	if finalityDepth > latestBlock.Number {
+		return 0
+	}
+	return latestBlock.Number - finalityDepth
 }
