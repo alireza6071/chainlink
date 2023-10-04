@@ -8,7 +8,7 @@ import (
 
 	mock "github.com/stretchr/testify/mock"
 
-	solana "github.com/smartcontractkit/chainlink/v2/core/chains/solana"
+	solana "github.com/smartcontractkit/chainlink-solana/pkg/solana"
 
 	starknet "github.com/smartcontractkit/chainlink/v2/core/chains/starknet"
 
