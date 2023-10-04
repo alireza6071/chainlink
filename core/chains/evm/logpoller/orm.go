@@ -694,6 +694,10 @@ func (o *DbORM) blocksRangeAfterTimestamp(after time.Time, confs Confirmations, 
 	}
 
 	var blocks []LogPollerBlock
+	// We don't ask about the min(last_finalized_block_number) because this column was added later and some rows might be set to 0.
+	// We can't backfill this column because we don't know the last finalized block number at the time the block was inserted to db.
+	// What is more, there is no proper index for last_finalized_block_number, so we would have to do a full table scan.
+	// Therefore, we rely on min/max(block_number) to pick the earliest and latest blocks
 	err = o.q.WithOpts(qopts...).SelectNamed(&blocks, `
 		SELECT * FROM evm.log_poller_blocks 
 		WHERE evm_chain_id = :evm_chain_id
@@ -708,8 +712,21 @@ func (o *DbORM) blocksRangeAfterTimestamp(after time.Time, confs Confirmations, 
 	if len(blocks) != 2 {
 		return 0, 0, nil
 	}
+	// If finalized logs are requested, return the minimum block_number and the maximum last_finalized_block_number.
+	// We can't rely on min(last_finalized_block_number), because we don't store this value from the beginning of the db table.
+	// We assume that in most of the cases min(block_number) <= max(last_finalized_block_number).
+	// min(block_number) > max(last_finalized_block_number) is possible, but it's a rare case.
+	// It happens only if timestamp is very close to now() and finality tag was just enabled for the chain.
+	//
+	// Example
+	// block_number | last_finalized_block_number | timestamp
+	// 100          | 0							  | 2021-01-01 00:00:00
+	// 101	        | 0							  | 2021-02-01 00:00:00
+	// 102	        | 90						  | 2021-03-01 00:00:00
+	// 103	        | 95						  | 2021-04-01 00:00:00
+	// In this case you will get 100 as the first block and 95 as the last finalized block.
 	if confs == Finalized {
-		return blocks[0].LastFinalizedBlockNumber, blocks[1].LastFinalizedBlockNumber, nil
+		return blocks[0].BlockNumber, blocks[1].LastFinalizedBlockNumber, nil
 	}
 	return blocks[0].BlockNumber, blocks[1].BlockNumber - int64(confs), nil
 }

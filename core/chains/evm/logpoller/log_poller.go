@@ -94,7 +94,7 @@ type logPoller struct {
 	lggr                  logger.Logger
 	pollPeriod            time.Duration // poll period set by block production rate
 	useFinalityTag        bool          // indicates whether logPoller should use chain's finality or pick a fixed depth for finality
-	finalityDepth         int64         // finality depth is taken to mean that block (head - finality) is finalized. When finalityTag is used, this value keeps changing
+	finalityDepth         int64         // finality depth is taken to mean that block (head - finality) is finalized. If `useFinalityTag` is set to true, this value is ignored, because finalityDepth is fetched from chain
 	keepBlocksDepth       int64         // the number of blocks behind the head for which we keep the blocks. Must be greater than finality depth + 1.
 	backfillBatchSize     int64         // batch size to use when backfilling finalized logs
 	rpcBatchSize          int64         // batch size to use for fallback RPC calls made in GetBlocks
@@ -566,11 +566,6 @@ func (lp *logPoller) BackupPollAndSaveLogs(ctx context.Context, backupPollerBloc
 			} else {
 				lp.lggr.Errorw("Backup log poller unable to get starting block", "err", err)
 			}
-			return
-		}
-
-		if err != nil {
-			lp.lggr.Warnw("Backup logpoller failed to fetch finality", "err", err)
 			return
 		}
 

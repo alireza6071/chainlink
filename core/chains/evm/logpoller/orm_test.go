@@ -1081,7 +1081,7 @@ func TestSelectLatestBlockNumberEventSigsAddrsWithConfs(t *testing.T) {
 		GenLog(th.ChainID, 2, 2, utils.RandomAddress().String(), event2[:], address2),
 		GenLog(th.ChainID, 2, 3, utils.RandomAddress().String(), event2[:], address2),
 	}))
-	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 3, time.Now(), 0))
+	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 3, time.Now(), 1))
 
 	tests := []struct {
 		name                string
@@ -1112,6 +1112,14 @@ func TestSelectLatestBlockNumberEventSigsAddrsWithConfs(t *testing.T) {
 			events:              []common.Hash{event1},
 			addrs:               []common.Address{address1},
 			confs:               0,
+			fromBlock:           0,
+			expectedBlockNumber: 1,
+		},
+		{
+			name:                "only finalized log is picked",
+			events:              []common.Hash{event1, event2},
+			addrs:               []common.Address{address1, address2},
+			confs:               logpoller.Finalized,
 			fromBlock:           0,
 			expectedBlockNumber: 1,
 		},
@@ -1173,8 +1181,8 @@ func TestSelectLogsCreatedAfter(t *testing.T) {
 		GenLog(th.ChainID, 1, 3, utils.RandomAddress().String(), event[:], address),
 	}))
 	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 1, past, 0))
-	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 2, now, 0))
-	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 3, future, 0))
+	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 2, now, 1))
+	require.NoError(t, th.ORM.InsertBlock(utils.RandomAddress().Hash(), 3, future, 2))
 
 	type expectedLog struct {
 		block int64
@@ -1226,27 +1234,36 @@ func TestSelectLogsCreatedAfter(t *testing.T) {
 			after:        past.Add(-time.Hour),
 			expectedLogs: []expectedLog{},
 		},
+		{
+			name:  "returns only finalized log",
+			confs: logpoller.Finalized,
+			after: past.Add(-time.Hour),
+			expectedLogs: []expectedLog{
+				{block: 2, log: 1},
+				{block: 2, log: 2},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run("SelectLogsCreatedAfter"+tt.name, func(t *testing.T) {
 			logs, err := th.ORM.SelectLogsCreatedAfter(address, event, tt.after, tt.confs)
 			require.NoError(t, err)
-			assert.Len(t, logs, len(tt.expectedLogs))
+			require.Len(t, logs, len(tt.expectedLogs))
 
 			for i, log := range logs {
-				assert.Equal(t, tt.expectedLogs[i].block, log.BlockNumber)
-				assert.Equal(t, tt.expectedLogs[i].log, log.LogIndex)
+				require.Equal(t, tt.expectedLogs[i].block, log.BlockNumber)
+				require.Equal(t, tt.expectedLogs[i].log, log.LogIndex)
 			}
 		})
 
 		t.Run("SelectIndexedLogsCreatedAfter"+tt.name, func(t *testing.T) {
 			logs, err := th.ORM.SelectIndexedLogsCreatedAfter(address, event, 1, []common.Hash{event}, tt.after, tt.confs)
 			require.NoError(t, err)
-			assert.Len(t, logs, len(tt.expectedLogs))
+			require.Len(t, logs, len(tt.expectedLogs))
 
 			for i, log := range logs {
-				assert.Equal(t, tt.expectedLogs[i].block, log.BlockNumber)
-				assert.Equal(t, tt.expectedLogs[i].log, log.LogIndex)
+				require.Equal(t, tt.expectedLogs[i].block, log.BlockNumber)
+				require.Equal(t, tt.expectedLogs[i].log, log.LogIndex)
 			}
 		})
 	}

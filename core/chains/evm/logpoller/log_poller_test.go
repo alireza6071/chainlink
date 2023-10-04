@@ -1211,3 +1211,55 @@ func Test_PollAndQueryFinalizedBlocks(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, logsByConfs, firstBatchLen+secondBatchLen-numberOfConfirmations)
 }
+
+func Test_PollAndSavePersistsFinalityInBlocks(t *testing.T) {
+	ctx := testutils.Context(t)
+	numberOfBlocks := 10
+
+	tests := []struct {
+		name                       string
+		useFinalityTag             bool
+		finalityDepth              int64
+		expectedLastFinalizedBlock int64
+	}{
+		{
+			name:                       "using fixed finality depth",
+			useFinalityTag:             false,
+			finalityDepth:              2,
+			expectedLastFinalizedBlock: int64(numberOfBlocks - 2),
+		},
+		{
+			name:                       "setting last finalized block number to 0 if finality is too deep",
+			useFinalityTag:             false,
+			finalityDepth:              20,
+			expectedLastFinalizedBlock: 0,
+		},
+		{
+			name:                       "using finality from chain",
+			useFinalityTag:             true,
+			finalityDepth:              0,
+			expectedLastFinalizedBlock: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			th := SetupTH(t, tt.useFinalityTag, tt.finalityDepth, 3, 2)
+			// Mark first block as finalized
+			h := th.Client.Blockchain().CurrentHeader()
+			th.Client.Blockchain().SetFinalized(h)
+
+			// Create a couple of blocks
+			for i := 0; i < numberOfBlocks-1; i++ {
+				th.Client.Commit()
+			}
+
+			th.PollAndSaveLogs(ctx, 1)
+
+			latestBlock, err := th.ORM.SelectLatestBlock()
+			require.NoError(t, err)
+			require.Equal(t, int64(numberOfBlocks), latestBlock.BlockNumber)
+			require.Equal(t, tt.expectedLastFinalizedBlock, latestBlock.LastFinalizedBlockNumber)
+		})
+	}
+
+}
