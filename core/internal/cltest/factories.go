@@ -523,9 +523,6 @@ func MustInsertRandomKey(
 		enabled := true
 		for _, opt := range opts {
 			switch v := opt.(type) {
-			case int:
-			case int64:
-			case evmtypes.Nonce:
 			case bool:
 				enabled = v
 			default:
